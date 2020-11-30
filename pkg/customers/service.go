@@ -151,36 +151,37 @@ func (s *Service) AllActive(ctx context.Context) ([]*Customer, error) {
 }
 
 // Save save/update
-func (s *Service) Save(ctx context.Context, item *Customer) error {
+func (s *Service) Save(ctx context.Context, item *Customer) (*Customer, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
+	res := &Customer{}
 	if item.ID == 0 {
-		_, err := s.db.ExecContext(ctx, `
-			INSERT INTO customers(name, phone) VALUES ($1, $2) ON CONFLICT (phone) DO UPDATE SET name = excluded.name, active = excluded.active, created = excluded.created;
-		`, item.Name, item.Phone)
+		err := s.db.QueryRowContext(ctx, `
+			INSERT INTO customers(name, phone) VALUES ($1, $2) ON CONFLICT (phone) DO UPDATE SET name = excluded.name, active = excluded.active, created = excluded.created 
+			RETURNING id, name, phone, active, created
+		`, item.Name, item.Phone).Scan(&res.ID, &res.Name, &res.Phone, &res.Active, &res.Created)
 
 		if err != nil {
 			log.Print(err)
-			return err
+			return nil, err
 		}
-		return nil
+		return res, nil
 	}
 
 	_, err := s.ByID(ctx, item.ID)
 	if err != nil {
 		log.Print(err)
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
-	_, err = s.db.ExecContext(ctx, `
-			UPDATE customers SET name = $1, phone = $2, active = $3, created = $4 where id = $5;
-		`, item.Name, item.Phone, item.Active, item.Created, item.ID)
+	err = s.db.QueryRowContext(ctx, `
+			UPDATE customers SET name = $1, phone = $2, active = $3, created = $4 where id = $5 RETURNING id, name, phone, active, created
+		`, item.Name, item.Phone, item.Active, item.Created, item.ID).Scan(&res.ID, &res.Name, &res.Phone, &res.Active, &res.Created)
 
 	if err != nil {
 		log.Print(err)
-		return err
+		return nil, err
 	}
-	return nil
+	return res, nil
 }
 
 // RemoveByID удаляет баннер по идентификатору

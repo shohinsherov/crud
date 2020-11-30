@@ -151,11 +151,23 @@ func (s *Server) handleSaveCustomer(writer http.ResponseWriter, request *http.Re
 		Created: time.Now(),
 	}
 
-	err = s.customersSvc.Save(request.Context(), &customer)
+	cust, err := s.customersSvc.Save(request.Context(), &customer)
 	if err != nil {
 		log.Print(err)
 		http.Error(writer, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
+	}
+
+	data, err := json.Marshal(cust)
+	if err != nil {
+		log.Print(err)
+		http.Error(writer, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	writer.Header().Set("Contetn-Type", "applicatrion/json")
+	_, err = writer.Write(data)
+	if err != nil {
+		log.Print(err)
 	}
 
 	return
@@ -193,7 +205,7 @@ func (s *Server) handleRemoveByID(writer http.ResponseWriter, request *http.Requ
 }
 
 // handleBlockById  выставляет статус active в false
-func (s * Server) handleBlockByID(writer http.ResponseWriter, request *http.Request) {
+func (s *Server) handleBlockByID(writer http.ResponseWriter, request *http.Request) {
 	idParam := request.URL.Query().Get("id")
 	id, err := strconv.ParseInt(idParam, 10, 64)
 	if err != nil {
@@ -211,7 +223,7 @@ func (s * Server) handleBlockByID(writer http.ResponseWriter, request *http.Requ
 }
 
 // handleUnblockById  вsставлzет статус active в true
-func (s * Server) handleUnblockByID(writer http.ResponseWriter, request *http.Request) {
+func (s *Server) handleUnblockByID(writer http.ResponseWriter, request *http.Request) {
 	idParam := request.URL.Query().Get("id")
 	id, err := strconv.ParseInt(idParam, 10, 64)
 	if err != nil {
@@ -227,6 +239,7 @@ func (s * Server) handleUnblockByID(writer http.ResponseWriter, request *http.Re
 		return
 	}
 }
+
 /*
 func (s *Server) process(writer http.ResponseWriter, request *http.Request) {
 	log.Print(request.RequestURI) // полный урл
