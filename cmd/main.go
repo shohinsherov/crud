@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
-	"database/sql"
+	"time"
+
+	"github.com/jackc/pgx/v4/pgxpool"
+	"go.uber.org/dig"
+
+	//"database/sql"
 	"log"
 	"net"
 	"net/http"
@@ -17,6 +22,8 @@ import (
 func main() {
 	host := "0.0.0.0"
 	port := "9999"
+	// адрес подключения
+	//протокол://логин:палоь@хост:порт/бд
 	dsn := "postgres://app:postgres@localhost:5432/db"
 
 	if err := execute(host, port, dsn); err != nil {
@@ -48,22 +55,61 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 }
 
 func execute(host string, port string, dsn string) (err error) {
-	db, err := sql.Open("pgx", dsn)
+	//
+	deps := []interface{}{
+		app.NewServer,
+		http.NewServeMux,
+		func() (*pgxpool.Pool, error) {
+			ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
+			return pgxpool.Connect(ctx, dsn)
+		},
+		customers.NewService,
+		func(server *app.Server) *http.Server {
+			return &http.Server{
+				Addr:    net.JoinHostPort(host, port),
+				Handler: server,
+			}
+		},
+	}
+
+	//
+	container := dig.New()
+	for _, dep := range deps {
+		err = container.Provide(dep)
+		if err != nil {
+			log.Print(err)
+			return err
+		}
+	}
+
+	err = container.Invoke(func(server *app.Server) {
+		server.Init()
+	})
 	if err != nil {
+		log.Print(err)
 		return err
 	}
-	defer func() {
-		if cerr := db.Close(); cerr != nil {
-			if err == nil {
-				err = cerr
-				return
-			}
-			log.Print(err)
-		}
-	}()
-	// TODO запросы
+
+	return container.Invoke(func(server *http.Server) error {
+		log.Print("server start " + host + ":" + port)
+		return server.ListenAndServe()
+	})
+
+	/*// получения указателья на структуру для раборты с БД
+	connectCtx, _ := context.WithTimeout(context.Background(), time.Second * 5)
+	pool, err := pgxpool.Connect(connectCtx, dsn)
+	if err != nil {
+		log.Print(err)
+		os.Exit(1)
+		return
+	}
+	// закрытие структуры
+	defer pool.Close()
+	// TODO: запросы
+
+
 	ctx := context.Background()
-	_, err = db.ExecContext(ctx, `
+	_, err = pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS customers (
 			id BIGSERIAL PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -72,24 +118,19 @@ func execute(host string, port string, dsn string) (err error) {
 			created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
-	
+
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
 	mux := http.NewServeMux()
-	customersSvc := customers.NewService(db)
+	customersSvc := customers.NewService(pool)
 
 	server := app.NewServer(mux, customersSvc)
 	server.Init()
 
-	/*mux.HandleFunc("/banners.getAll", func(writer http.ResponseWriter, request *http.Request) {
-		_, err := writer.Write([]byte("Hello Bekhai be k"))
-		if err != nil {
-			log.Print(err)
-		}
-	}) */
+
 
 	srv := &http.Server{
 		Addr:    net.JoinHostPort(host, port),
@@ -97,5 +138,5 @@ func execute(host string, port string, dsn string) (err error) {
 	}
 
 	log.Print("server start " + host + ":" + port)
-	return srv.ListenAndServe()
+	return srv.ListenAndServe()*/
 }
