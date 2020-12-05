@@ -5,19 +5,22 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"time"
+
+	//"time"
+
+	"github.com/gorilla/mux"
 
 	"github.com/shohinsherov/crud/pkg/customers"
 )
 
 // Server предостовляет собой логический сервер нашего приложения
 type Server struct {
-	mux          *http.ServeMux
+	mux          *mux.Router
 	customersSvc *customers.Service
 }
 
 // NewServer - функция-конструктор для создания сервера.
-func NewServer(mux *http.ServeMux, customersSvc *customers.Service) *Server {
+func NewServer(mux *mux.Router, customersSvc *customers.Service) *Server {
 	return &Server{mux: mux, customersSvc: customersSvc}
 }
 
@@ -25,16 +28,26 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	s.mux.ServeHTTP(writer, request)
 }
 
+const (
+	// GET ....
+	GET = "GET"
+	// POST ...
+	POST = "POST"
+	// DELETE ...
+	DELETE = "DELETE"
+)
+
 // Init инициализирует сервер (регистрирует все Handler-ы)
 func (s *Server) Init() {
-	s.mux.HandleFunc("/customers.getAll", s.handleGetAllCustomers)
-	s.mux.HandleFunc("/customers.getAllActive", s.handleGetAllActiveCustomers)
-	s.mux.HandleFunc("/customers.getById", s.handleCustomerByID)
-	s.mux.HandleFunc("/customers.save", s.handleSaveCustomer)
-	s.mux.HandleFunc("/customers.removeById", s.handleRemoveByID)
-	s.mux.HandleFunc("/customers.blockById", s.handleBlockByID)
-	s.mux.HandleFunc("/customers.unblockById", s.handleUnblockByID)
-	//	s.mux.HandleFunc("/process", s.process)
+
+	s.mux.HandleFunc("/customers", s.handleGetAllActiveCustomers).Methods(GET)
+	s.mux.HandleFunc("/customers/active", s.handleGetAllActiveCustomers)
+	s.mux.HandleFunc("/customers/{id}", s.handleCustomerByID).Methods(GET)
+	s.mux.HandleFunc("/customers", s.handleSaveCustomer).Methods(POST)
+	s.mux.HandleFunc("/customers/{id}", s.handleRemoveByID).Methods(DELETE)
+	s.mux.HandleFunc("/customers/{id}/block", s.handleBlockByID).Methods(POST)
+	s.mux.HandleFunc("/customers/{id}/unblock", s.handleUnblockByID).Methods(POST)
+
 }
 
 //  get all
@@ -85,9 +98,16 @@ func (s *Server) handleGetAllActiveCustomers(writer http.ResponseWriter, request
 
 // get by id
 func (s *Server) handleCustomerByID(writer http.ResponseWriter, request *http.Request) {
-	idParam := request.URL.Query().Get("id")
+	//idParam := request.URL.Query().Get("id")
+	idParam, ok := mux.Vars(request)["id"]
+
+	if !ok {
+		http.Error(writer, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
 
 	id, err := strconv.ParseInt(idParam, 10, 64)
+
 	if err != nil {
 		log.Print(err)
 		http.Error(writer, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
@@ -118,40 +138,16 @@ func (s *Server) handleCustomerByID(writer http.ResponseWriter, request *http.Re
 
 // add or update
 func (s *Server) handleSaveCustomer(writer http.ResponseWriter, request *http.Request) {
-
-	idParam := request.FormValue("id")
-	name := request.FormValue("name")
-	phone := request.FormValue("phone")
-	active := request.FormValue("active")
-	//	created := request.FormValue("created")
-	id, err := strconv.ParseInt(idParam, 10, 64)
+	var item *customers.Customer
+	err := json.NewDecoder(request.Body).Decode(&item)
+	//log.Print(item)
 	if err != nil {
 		log.Print(err)
 		http.Error(writer, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
-	act := true
-	log.Print(active)
-	if active != "true" {
-		act = false
-	}
 
-	/*layout := "Jan 02 2006 15:04:05 GMT-0700"
-	tt, err := time.Parse(layout, created)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-	*/
-	customer := customers.Customer{
-		ID:      id,
-		Name:    name,
-		Phone:   phone,
-		Active:  act,
-		Created: time.Now(),
-	}
-
-	cust, err := s.customersSvc.Save(request.Context(), &customer)
+	cust, err := s.customersSvc.Save(request.Context(), item)
 	if err != nil {
 		log.Print(err)
 		http.Error(writer, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -176,7 +172,13 @@ func (s *Server) handleSaveCustomer(writer http.ResponseWriter, request *http.Re
 
 // delete customer byID
 func (s *Server) handleRemoveByID(writer http.ResponseWriter, request *http.Request) {
-	idParam := request.URL.Query().Get("id")
+	//idParam := request.URL.Query().Get("id")
+	idParam, ok := mux.Vars(request)["id"]
+
+	if !ok {
+		http.Error(writer, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
 	id, err := strconv.ParseInt(idParam, 10, 64)
 	if err != nil {
 		log.Print(err)
@@ -191,22 +193,15 @@ func (s *Server) handleRemoveByID(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 
-	/*data, err := json.Marshal(dBanner)
-	if err != nil {
-		log.Print(err)
-		http.Error(writer, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-	writer.Header().Set("Contetn-Type", "applicatrion/json")
-	_, err = writer.Write(data)
-	if err != nil {
-		log.Print(err)
-	}*/
 }
 
 // handleBlockById  выставляет статус active в false
 func (s *Server) handleBlockByID(writer http.ResponseWriter, request *http.Request) {
-	idParam := request.URL.Query().Get("id")
+	idParam, ok := mux.Vars(request)["id"]
+	if !ok {
+		http.Error(writer, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
 	id, err := strconv.ParseInt(idParam, 10, 64)
 	if err != nil {
 		log.Print(err)
@@ -224,7 +219,11 @@ func (s *Server) handleBlockByID(writer http.ResponseWriter, request *http.Reque
 
 // handleUnblockById  вsставлzет статус active в true
 func (s *Server) handleUnblockByID(writer http.ResponseWriter, request *http.Request) {
-	idParam := request.URL.Query().Get("id")
+	idParam, ok := mux.Vars(request)["id"]
+	if !ok {
+		http.Error(writer, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
 	id, err := strconv.ParseInt(idParam, 10, 64)
 	if err != nil {
 		log.Print(err)
@@ -238,6 +237,16 @@ func (s *Server) handleUnblockByID(writer http.ResponseWriter, request *http.Req
 		http.Error(writer, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
+}
+
+// =====================
+
+// Vars return the route variables for the current request, if any.
+func Vars(r *http.Request) map[string]string {
+	if rv := r.Context().Value(r); rv != nil {
+		return rv.(map[string]string)
+	}
+	return nil
 }
 
 /*

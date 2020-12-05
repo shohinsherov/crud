@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/gorilla/mux"
 	"context"
 	"time"
 
@@ -58,7 +59,7 @@ func execute(host string, port string, dsn string) (err error) {
 	//
 	deps := []interface{}{
 		app.NewServer,
-		http.NewServeMux,
+		mux.NewRouter, //http.NewServeMux,
 		func() (*pgxpool.Pool, error) {
 			ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
 			return pgxpool.Connect(ctx, dsn)
