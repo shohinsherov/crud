@@ -6,10 +6,15 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/shohinsherov/crud/cmd/app/middleware"
+
+	"github.com/shohinsherov/crud/pkg/security"
+
 	//"time"
 
 	"github.com/gorilla/mux"
 
+	_ "github.com/jackc/pgx/v4/stdlib"
 	"github.com/shohinsherov/crud/pkg/customers"
 )
 
@@ -17,11 +22,12 @@ import (
 type Server struct {
 	mux          *mux.Router
 	customersSvc *customers.Service
+	securitySvc  *security.Service
 }
 
 // NewServer - функция-конструктор для создания сервера.
-func NewServer(mux *mux.Router, customersSvc *customers.Service) *Server {
-	return &Server{mux: mux, customersSvc: customersSvc}
+func NewServer(mux *mux.Router, customersSvc *customers.Service, securitySvc *security.Service) *Server {
+	return &Server{mux: mux, customersSvc: customersSvc, securitySvc: securitySvc}
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -39,14 +45,17 @@ const (
 
 // Init инициализирует сервер (регистрирует все Handler-ы)
 func (s *Server) Init() {
+	//s.mux.Use(s.mdw.Logger)
 
-	s.mux.HandleFunc("/customers", s.handleGetAllActiveCustomers).Methods(GET)
-	s.mux.HandleFunc("/customers/active", s.handleGetAllActiveCustomers)
+	s.mux.HandleFunc("/customers", s.handleGetAllCustomers).Methods(GET)
+	s.mux.HandleFunc("/customers/active", s.handleGetAllActiveCustomers).Methods(GET)
 	s.mux.HandleFunc("/customers/{id}", s.handleCustomerByID).Methods(GET)
 	s.mux.HandleFunc("/customers", s.handleSaveCustomer).Methods(POST)
 	s.mux.HandleFunc("/customers/{id}", s.handleRemoveByID).Methods(DELETE)
 	s.mux.HandleFunc("/customers/{id}/block", s.handleBlockByID).Methods(POST)
 	s.mux.HandleFunc("/customers/{id}/block", s.handleUnblockByID).Methods(DELETE)
+	s.mux.Use(middleware.Basic(s.securitySvc.Auth))
+	//s.mux.HandleFunc("/managers", )
 
 }
 
@@ -55,7 +64,7 @@ func (s *Server) handleGetAllCustomers(writer http.ResponseWriter, request *http
 	b, err := s.customersSvc.All(request.Context())
 	if err != nil {
 		log.Print(err)
-		http.Error(writer, http.StatusText(http.StatusNotImplemented), http.StatusNotImplemented)
+		http.Error(writer, http.StatusText(http.StatusNotImplemented), 401)
 		return
 	}
 
