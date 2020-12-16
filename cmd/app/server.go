@@ -2,11 +2,12 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
 
-	"github.com/shohinsherov/crud/cmd/app/middleware"
+	//"github.com/shohinsherov/crud/cmd/app/middleware"
 
 	"github.com/shohinsherov/crud/pkg/security"
 
@@ -14,7 +15,6 @@ import (
 
 	"github.com/gorilla/mux"
 
-	_ "github.com/jackc/pgx/v4/stdlib"
 	"github.com/shohinsherov/crud/pkg/customers"
 )
 
@@ -24,6 +24,45 @@ type Server struct {
 	customersSvc *customers.Service
 	securitySvc  *security.Service
 }
+
+// Token ...
+type Token struct {
+	Token string `json:"token"`
+}
+
+// Responce ...
+type Responce struct {
+	CustomerID int64  `json:"customerId"`
+	Status     string `json:"status"`
+	Reason     string `json:"reason"`
+}
+
+// ResponceOk ...
+type ResponceOk struct {
+	Status     string `json:"status"`
+	CustomerID int64  `json:"customerId"`
+}
+
+// ResponceFail ...
+type ResponceFail struct {
+	Status string `json:"status"`
+	Reason string `json:"reason"`
+}
+
+// ErrNotFound ...
+var ErrNotFound = errors.New("item not found")
+
+// ErrNoSuchUser если пользователь не найден
+var ErrNoSuchUser = errors.New("No such user")
+
+// ErrInvalidPassword если пароль не верный
+var ErrInvalidPassword = errors.New("Invalid password")
+
+// ErrInternal если происходить другая ошибка
+var ErrInternal = errors.New("Internal error")
+
+// ErrExpired ....
+var ErrExpired = errors.New("Token is expired")
 
 // NewServer - функция-конструктор для создания сервера.
 func NewServer(mux *mux.Router, customersSvc *customers.Service, securitySvc *security.Service) *Server {
@@ -54,8 +93,135 @@ func (s *Server) Init() {
 	s.mux.HandleFunc("/customers/{id}", s.handleRemoveByID).Methods(DELETE)
 	s.mux.HandleFunc("/customers/{id}/block", s.handleBlockByID).Methods(POST)
 	s.mux.HandleFunc("/customers/{id}/block", s.handleUnblockByID).Methods(DELETE)
-	s.mux.Use(middleware.Basic(s.securitySvc.Auth))
+	//s.mux.Use(middleware.Basic(s.securitySvc.Auth))
+
+	s.mux.HandleFunc("/api/customers", s.saveCustomers).Methods(POST)
+	s.mux.HandleFunc("/api/customers/token", s.handleGetToken).Methods(POST)
+	s.mux.HandleFunc("/api/customers/token/validate", s.handleValidateToken).Methods(POST)
+
 	//s.mux.HandleFunc("/managers", )
+
+}
+
+func (s *Server) handleGetToken(w http.ResponseWriter, r *http.Request) {
+	var auth *security.Auth
+	var tok Token
+	err := json.NewDecoder(r.Body).Decode(&auth)
+	log.Print(auth)
+	if err != nil {
+		log.Print("Can't Decode login and password")
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	log.Print("Login: ", auth.Login, "Password: ", auth.Password)
+
+	token, err := s.customersSvc.TokenForCustomer(r.Context(), auth.Login, auth.Password)
+	if err != nil {
+		log.Print(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	tok.Token = token
+	data, err := json.Marshal(tok)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, err = w.Write(data)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (s *Server) handleValidateToken(w http.ResponseWriter, r *http.Request) {
+	var fail ResponceFail
+	var ok ResponceOk
+	var token Token
+	var data []byte
+	code := 200
+
+	err := json.NewDecoder(r.Body).Decode(&token)
+	if err != nil {
+		log.Print("Can't Decode token")
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	id, er := s.securitySvc.AuthenticateCusomer(r.Context(), token.Token)
+
+	if er == security.ErrNoSuchUser {
+		code = 404
+		fail.Status = "fail"
+		fail.Reason = "not found"
+	} else if er == security.ErrExpired {
+		code = 400
+		fail.Status = "fail"
+		fail.Reason = "expired"
+	} else if er == nil {
+		log.Print(id)
+		ok.Status = "ok"
+		ok.CustomerID = id
+	} else {
+		log.Print("err", er)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if code != 200 {
+		w.WriteHeader(code)
+
+		data, err = json.Marshal(fail)
+		if err != nil {
+			log.Print(err)
+		}
+	} else {
+		data, err = json.Marshal(ok)
+		if err != nil {
+			log.Print(err)
+		}
+	}
+	_, err = w.Write(data)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	return
+}
+
+func (s *Server) saveCustomers(writer http.ResponseWriter, request *http.Request) {
+	var item *customers.Customer
+	err := json.NewDecoder(request.Body).Decode(&item)
+	log.Print(item)
+	if err != nil {
+		log.Print(err)
+		http.Error(writer, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	cust, err := s.customersSvc.SaveCustomer(request.Context(), item)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	log.Print(cust)
+
+	data, err := json.Marshal(cust)
+	if err != nil {
+		log.Print(err)
+		http.Error(writer, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	writer.Header().Set("Contetn-Type", "applicatrion/json")
+	_, err = writer.Write(data)
+	if err != nil {
+		log.Print(err)
+	}
+	http.Error(writer, http.StatusText(200), 200)
+	return
 
 }
 
