@@ -3,21 +3,19 @@ package customers
 import (
 	"context"
 	"crypto/rand"
-
-	"golang.org/x/crypto/bcrypt"
-
-	//"crypto/md5"
-
 	"encoding/hex"
-
-	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/pgxpool"
-
 	"errors"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 )
+
+// ErrTokenNotFound ...
+var ErrTokenNotFound = errors.New("token not found")
 
 // ErrNotFound возвращается, когда покупатель не найден.
 var ErrNotFound = errors.New("item not found")
@@ -31,8 +29,11 @@ var ErrNoSuchUser = errors.New("No such user")
 // ErrInvalidPassword если пароль не верный
 var ErrInvalidPassword = errors.New("Invalid password")
 
-// ErrExpired ....
-var ErrExpired = errors.New("Token is expired")
+// ErrPhoneUsed ...
+var ErrPhoneUsed = errors.New("phone alredy registered")
+
+// ErrTokenExpired ...
+var ErrTokenExpired = errors.New("token expired")
 
 // Service описывает сервис работы с покупателями.
 type Service struct {
@@ -46,18 +47,176 @@ func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool}
 }
 
-// Customer представляет информацию о покупателе.
-type Customer struct {
-	ID       int64     `json:"id"`
-	Name     string    `json:"name"`
-	Phone    string    `json:"phone"`
-	Password string    `json:"password"`
-	Active   bool      `json:"active"`
-	Created  time.Time `json:"created"`
+type Auth struct {
+	Login    string `json:"login"`
+	Password string `json:"password"`
 }
 
-// TokenForCustomer ...
-func (s *Service) TokenForCustomer(
+// Customer представляет информацию о покупателе.
+type Customer struct {
+	ID      int64     `json:"id"`
+	Name    string    `json:"name"`
+	Phone   string    `json:"phone"`
+	Active  bool      `json:"active"`
+	Created time.Time `json:"created"`
+}
+
+type Registration struct {
+	Name     string `json:"name"`
+	Phone    string `json:"phone"`
+	Password string `json:"password"`
+}
+
+type Product struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Price int    `json:"price"`
+	Qty   int    `json:"qty`
+}
+
+func (s *Service) ByID(ctx context.Context, id int64) (*Customer, error) {
+	item := &Customer{}
+
+	err := s.pool.QueryRow(ctx, `
+	SELECT id,name, phone, active, created FROM customers WHERE id = $1
+	`, id).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+
+	return item, nil
+}
+
+func (s *Service) All(ctx context.Context) ([]*Customer, error) {
+	items := make([]*Customer, 0)
+	rows, err := s.pool.Query(ctx, `
+	SELECT id,name, phone, active, created FROM customers ORDER BY id
+	`)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+
+	for rows.Next() {
+		item := &Customer{}
+		rows.Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *Service) AllActive(ctx context.Context) ([]*Customer, error) {
+	items := make([]*Customer, 0)
+	rows, err := s.pool.Query(ctx, `
+	SELECT id,name, phone, active, created FROM customers WHERE active= true ORDER BY id;
+	`)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+
+	for rows.Next() {
+		item := &Customer{}
+		rows.Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *Service) Register(ctx context.Context, item *Registration) (*Customer, error) {
+	customer := &Customer{}
+	hash, err := bcrypt.GenerateFromPassword([]byte(item.Password), bcrypt.DefaultCost)
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+	log.Print(hex.EncodeToString(hash))
+	err = s.pool.QueryRow(ctx, `
+	INSERT INTO customers(name,phone,password) VALUES ($1,$2,$3) ON CONFLICT (phone) DO NOTHING RETURNING id, name, phone, active, created;
+	`, item.Name, item.Phone, hash).Scan(&customer.ID, &customer.Name, &customer.Phone, &customer.Active, &customer.Created)
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+	return customer, nil
+}
+
+func (s *Service) Update(ctx context.Context, item *Customer) (*Customer, error) {
+	customer := &Customer{
+		ID:    item.ID,
+		Name:  item.Name,
+		Phone: item.Phone,
+	}
+
+	err := s.pool.QueryRow(ctx, `
+	UPDATE customers SET name =$1,phone=$2 WHERE id =$3 RETURNING active,created
+	`, item.Name, item.Phone, item.ID).Scan(&customer.Active, &customer.Created)
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+	return customer, nil
+}
+
+func (s *Service) RemoveByID(ctx context.Context, id int64) (*Customer, error) {
+	customer := &Customer{}
+	err := s.pool.QueryRow(ctx, `
+	DELETE FROM customers WHERE id= $1 RETURNING id,name,phone,active,created
+	`, id).Scan(&customer.ID, &customer.Name, &customer.Phone, &customer.Active, &customer.Created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+	return customer, nil
+}
+
+func (s *Service) BlockByID(ctx context.Context, id int64) (*Customer, error) {
+	customer := &Customer{}
+	err := s.pool.QueryRow(ctx, `
+	UPDATE customers SET active= false WHERE id= $1 RETURNING id,name,phone,active,created
+	`, id).Scan(&customer.ID, &customer.Name, &customer.Phone, &customer.Active, &customer.Created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+	return customer, nil
+}
+
+func (s *Service) UnBlockByID(ctx context.Context, id int64) (*Customer, error) {
+	customer := &Customer{}
+	err := s.pool.QueryRow(ctx, `
+	UPDATE customers SET active= true WHERE id= $1 RETURNING id,name,phone,active,created
+	`, id).Scan(&customer.ID, &customer.Name, &customer.Phone, &customer.Active, &customer.Created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+	return customer, nil
+}
+
+func (s *Service) Token(
 	ctx context.Context,
 	phone string, password string,
 ) (token string, err error) {
@@ -91,104 +250,28 @@ func (s *Service) TokenForCustomer(
 	return token, nil
 }
 
-// SaveCustomer save customer with pass from JSON
-func (s *Service) SaveCustomer(ctx context.Context, item *Customer) (*Customer, error) {
-
-	if item.ID == 0 {
-
-		hash, err := bcrypt.GenerateFromPassword([]byte(item.Password), bcrypt.DefaultCost)
-		if err != nil {
-			log.Print(err)
-			return nil, ErrInternal
-		}
-		log.Print(hex.EncodeToString(hash))
-
-		res := &Customer{}
-		err = s.pool.QueryRow(ctx, `
-				INSERT INTO customers(name, phone, password) VALUES ($1, $2, $3)
-				RETURNING id, name, phone, password, active, created
-			`, item.Name, item.Phone, hash).Scan(&res.ID, &res.Name, &res.Phone, &res.Password, &res.Active, &res.Created)
-
-		if err != nil {
-			log.Print(err)
-			return nil, ErrInternal
-		}
-		return res, nil
-	}
-
-	/*_, err := s.ByID(ctx, item.ID)
-		if err != nil {
-			log.Print(err)
-			return nil, ErrNotFound
-		}
-		err = s.pool.QueryRow(ctx, `
-				UPDATE customers SET name = $1, phone = $2, active = $3, created = $4 where id = $5 RETURNING id, name, phone, active, created
-			`, item.Name, item.Phone, item.Active, item.Created, item.ID).Scan(&res.ID, &res.Name, &res.Phone, &res.Active, &res.Created)
-
-		if err != nil {
-			log.Print(err)
-			return nil, err
-	}
-	//return res, nil*/
-
-	return nil, ErrInternal
-}
-
-// ByID возвращает покупателья по индетификатору.
-func (s *Service) ByID(ctx context.Context, id int64) (*Customer, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	item := &Customer{}
-
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, name, phone, active, created FROM customers where id = $1`,
-		id).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
-
+func (s *Service) Products(ctx context.Context) ([]*Product, error) {
+	items := make([]*Product, 0)
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, price, qty FROM products WHERE active = TRUE ORDER BY id LIMIT 500
+	`)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
+		return items, nil
 	}
-
 	if err != nil {
-		log.Print(err)
 		return nil, ErrInternal
 	}
-	return item, nil
-}
-
-// All возврашает все существующие покупателей
-func (s *Service) All(ctx context.Context) ([]*Customer, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	//создаём слайс для хранения результатов
-	items := make([]*Customer, 0)
-
-	//делаем запрос
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, phone, active, created FROM customers
-	`)
-
-	//проверяем ошибки
-	if err != nil {
-		log.Print(err)
-		return nil, err
-	}
-
-	// rows нужно закрывать
 	defer rows.Close()
 
-	// rows.Next() возвращает true до тех пор, пока дальше есть строки
 	for rows.Next() {
-		item := &Customer{}
-		err = rows.Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+		item := &Product{}
+		err = rows.Scan(&item.ID, &item.Name, &item.Price, &item.Qty)
 		if err != nil {
 			log.Print(err)
 			return nil, err
 		}
 		items = append(items, item)
 	}
-	// в конце нужно проверять общую ошибку
 	err = rows.Err()
 	if err != nil {
 		log.Print(err)
@@ -198,141 +281,18 @@ func (s *Service) All(ctx context.Context) ([]*Customer, error) {
 	return items, nil
 }
 
-// AllActive возврашает всех активных покупателей
-func (s *Service) AllActive(ctx context.Context) ([]*Customer, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Service) IDByToken(ctx context.Context, token string) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `
+	SELECT customer_id FROM customers_tokens WHERE token = $1
+	`, token).Scan(&id)
 
-	//создаём слайс для хранения результатов
-	items := make([]*Customer, 0)
-
-	//делаем запрос
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, phone, active, created FROM customers where active
-	`)
-
-	//проверяем ошибки
+	if err == pgx.ErrNoRows {
+		return 0, nil
+	}
 	if err != nil {
-		log.Print(err)
-		return nil, err
+		return 0, ErrInternal
 	}
 
-	// rows нужно закрывать
-	defer rows.Close()
-
-	// rows.Next() возвращает true до тех пор, пока дальше есть строки
-	for rows.Next() {
-		item := &Customer{}
-		err = rows.Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
-		if err != nil {
-			log.Print(err)
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	// в конце нужно проверять общую ошибку
-	err = rows.Err()
-	if err != nil {
-		log.Print(err)
-		return nil, err
-	}
-
-	return items, nil
-}
-
-// Save save/update
-func (s *Service) Save(ctx context.Context, item *Customer) (*Customer, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	res := &Customer{}
-	if item.ID == 0 {
-		err := s.pool.QueryRow(ctx, `
-			INSERT INTO customers(name, phone) VALUES ($1, $2) ON CONFLICT (phone) DO UPDATE SET name = excluded.name, active = excluded.active, created = excluded.created 
-			RETURNING id, name, phone, active, created
-		`, item.Name, item.Phone).Scan(&res.ID, &res.Name, &res.Phone, &res.Active, &res.Created)
-
-		if err != nil {
-			log.Print(err)
-			return nil, err
-		}
-		return res, nil
-	}
-
-	_, err := s.ByID(ctx, item.ID)
-	if err != nil {
-		log.Print(err)
-		return nil, ErrNotFound
-	}
-	err = s.pool.QueryRow(ctx, `
-			UPDATE customers SET name = $1, phone = $2, active = $3, created = $4 where id = $5 RETURNING id, name, phone, active, created
-		`, item.Name, item.Phone, item.Active, item.Created, item.ID).Scan(&res.ID, &res.Name, &res.Phone, &res.Active, &res.Created)
-
-	if err != nil {
-		log.Print(err)
-		return nil, err
-	}
-	return res, nil
-}
-
-// RemoveByID удаляет баннер по идентификатору
-func (s *Service) RemoveByID(ctx context.Context, id int64) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	_, err := s.ByID(ctx, id)
-	if err != nil {
-		log.Print(err)
-		return ErrNotFound
-	}
-	_, err = s.pool.Exec(ctx, `
-		DELETE FROM customers where id = $1;
-	`, id)
-
-	if err != nil {
-		log.Print(err)
-		return err
-	}
-
-	return nil
-}
-
-// BlockByID выставляет статус active в false
-func (s *Service) BlockByID(ctx context.Context, id int64) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	_, err := s.ByID(ctx, id)
-	if err != nil {
-		log.Print(err)
-		return ErrNotFound
-	}
-	_, err = s.pool.Exec(ctx, `
-		UPDATE customers SET active = false where id = $1
-	`, id)
-
-	if err != nil {
-		log.Print(err)
-		return err
-	}
-
-	return nil
-}
-
-// UnblockByID выставляет статус active в false
-func (s *Service) UnblockByID(ctx context.Context, id int64) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	_, err := s.ByID(ctx, id)
-	if err != nil {
-		log.Print(err)
-		return ErrNotFound
-	}
-	_, err = s.pool.Exec(ctx, `
-		UPDATE customers SET active = true where id = $1
-	`, id)
-
-	if err != nil {
-		log.Print(err)
-		return err
-	}
-
-	return nil
+	return id, nil
 }
